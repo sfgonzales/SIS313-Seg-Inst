@@ -39,8 +39,8 @@ Reemplazar todo el contenido por:
 
 ```
 upstream app_servers {
-    server 192.168.100.249;
-    server 192.168.100.250;
+    server 192.168.100.249:3000;
+    server 192.168.100.250:3000;
 }
 
 server {
@@ -134,7 +134,7 @@ app.delete('/items/:id', (req, res) => {
   });
 });
 
-app.listen(3000, () => {
+app.listen(3000,'0.0.0.0', () => {
   console.log('Aplicación escuchando en puerto 3000');
 });
 ```
@@ -144,6 +144,8 @@ app.listen(3000, () => {
 node index.js
 ``
 ### 4️⃣ Configuración del Servidor de Base de Datos + RAID5 (192.168.100.251)
+#### 4.1 Creación de la Base de Datos
+
 - Instalar MariaDB y mdadm
 
 ```
@@ -182,6 +184,9 @@ bind-address = 0.0.0.0
 ```
 sudo systemctl restart mariadb
 ```
+
+#### 4.2 Implementación de RAID
+
 - Verificar los discos
 
 ```
@@ -191,29 +196,57 @@ lsblk
 
 ```
 sudo mdadm --create --verbose /dev/md0 --level=5 --raid-devices=3 /dev/sdb /dev/sdc /dev/sdd
+```
+- Verificar:
+
+```
+cat /proc/mdstat
+```
+- Crear el sistema de archivos:
+
+```
 sudo mkfs.ext4 /dev/md0
 sudo mkdir /mnt/raid
 sudo mount /dev/md0 /mnt/raid
+```
+
+- Hacerlo persistente:
+
+```
 sudo mdadm --detail --scan | sudo tee -a /etc/mdadm/mdadm.conf
 sudo update-initramfs -u
 echo '/dev/md0 /mnt/raid ext4 defaults 0 0' | sudo tee -a /etc/fstab
 ```
+
 >No olvidar crear un dico adicional para la restauración 
 
-- Verificar el RAID, simular la falla de uno de los discos y reconstruir
+- Simular una falla
 
 ```
 sudo mdadm --fail /dev/md0 /dev/sdb
 sudo mdadm --remove /dev/md0 /dev/sdb
+```
 
+- Verificar
+
+```
 cat /proc/mdstat
+```
 
-sudo mdadm --add /dev/md0 /dev/sde
-
-#Verificar la reconstrucción RAID
+- Reemplazar disco (por ejemplo añadir un disco nuevo /dev/sde):
+ 
+```
 sudo mdadm --add /dev/md0 /dev/sde
 ```
+
+- Verificar la reconstrucción RAID
+
+```
+sudo mdadm --add /dev/md0 /dev/sde
+```
+
 ### 5️⃣ Hardening Básico
+#### 5.1 Implementacion de SSH
 - Instalación del Servidor SSH (si no está instalado):
 
 ```
@@ -242,8 +275,9 @@ sudo nano /etc/ssh/sshd_config
 ```
 >Primeramente se recomienda cambiar el puerto por defecto 22 (`Port 22`) a otro valor, ayudando a reducir ataques automatizados, ya que muchos bots buscan específicamente ese puerto. Además, desactivar el acceso directo como root (`PermitRootLogin no`) evita que un atacante pueda obtener control total del sistema desde el primer intento, obligando al uso de cuentas con menos privilegios y luego escalar mediante sudo, lo que añade una capa de seguridad y trazabilidad.
 
+#### 5.2 Implementacion de UFW
 - Configuración del Firewall (UFW - Uncomplicated Firewall):
-Es importante configurar el firewall para permitir las conexiones entrantes al puerto SSH. Si UFW está habilitado en tu sistema, puedes permitir el tráfico SSH con el siguiente comando:
+Es importante configurar el firewall para permitir las conexiones entrantes al puerto SSH. Si UFW está habilitado en el sistema, se puede permitir el tráfico SSH con el siguiente comando:
 
 ```
 sudo ufw allow ssh
@@ -253,8 +287,36 @@ Si se cambio el puerto SSH en el archivo `/etc/ssh/sshd_config`, se debe especif
 ```
 sudo ufw allow 2222/tcp
 ```
+Entonces para cada servidor configuramos el UFW de la siguiente forma:
+- Balanceador:
 
-Para verificar el estado del firewall y asegurarte de que la regla para SSH (o tu puerto personalizado) esté activa, puedes usar el comando:
+```
+sudo ufw allow 80/tcp
+sudo ufw allow 2222/tcp
+sudo ufw enable
+```
+>Permitimos el tráfico web (puerto 80) para recibir las peticiones HTTP y el puerto 2222 para el acceso SSH
+
+- Servidores de Aplicaciones:
+
+```
+sudo ufw allow 2222/tcp
+sudo ufw allow from 192.168.100.248 to any port 3000
+sudo ufw enable
+```
+>Permitimos el puerto 2222 para SSH y el acceso al puerto 3000 solo desde el balanceador (192.168.100.248), para mayor seguridad.
+
+- Servidor de la Base de Datos:
+
+```
+sudo ufw allow 2222/tcp
+sudo ufw allow from 192.168.100.249 to any port 3306
+sudo ufw allow from 192.168.100.250 to any port 3306
+sudo ufw enable
+```
+>Permitimos el puerto 2222 para SSH y el acceso al puerto 3306 solo desde los servidores de aplicación (192.168.100.249 y 192.168.100.250), restringiendo el acceso externo.
+
+Para verificar el estado del firewall y asegurarse de que la regla para SSH (o el puerto personalizado) esté activa, usar el comando:
 
 ```
 sudo ufw status
